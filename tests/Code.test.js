@@ -163,9 +163,9 @@ test('手動送信メニューはHTMLダイアログを開く', () => {
 test('ダイアログは確認前とキャンセル時に送信しない', () => {
   const dialog = dialogFixture();
   dialog.elements.monthKey.value = '2026-09';
-  dialog.elements.email.value = 'manager@valid.jp';
+  dialog.elements.email.value = 'manager@example.com';
   dialog.elements.inputForm.submit();
-  assert.deepEqual(dialog.calls[0].args, ['2026-09', 'manager@valid.jp']);
+  assert.deepEqual(dialog.calls[0].args, ['2026-09', 'manager@example.com']);
   assert.equal(dialog.elements.confirmButton.disabled, true);
   dialog.calls[0].success({monthKey: '2026-09', count: 0, total: 0});
   assert.equal(dialog.elements.confirmedCount.textContent, '0件');
@@ -178,7 +178,7 @@ test('ダイアログは確認前とキャンセル時に送信しない', () =>
 test('ダイアログは送信中の連打を防ぎ、変更時は再確認を要求する', () => {
   const dialog = dialogFixture();
   dialog.elements.monthKey.value = '2026-09';
-  dialog.elements.email.value = 'manager@valid.jp';
+  dialog.elements.email.value = 'manager@example.com';
   dialog.elements.inputForm.submit();
   dialog.calls[0].success({monthKey: '2026-09', count: 1, total: 200});
   dialog.elements.sendButton.click();
@@ -190,7 +190,7 @@ test('ダイアログは送信中の連打を防ぎ、変更時は再確認を�
   dialog.elements.sendButton.click();
   assert.equal(dialog.calls.length, 2);
   dialog.elements.sendButton.click();
-  assert.deepEqual(dialog.calls[2].args, ['2026-09', 'manager@valid.jp', 2, 400]);
+  assert.deepEqual(dialog.calls[2].args, ['2026-09', 'manager@example.com', 2, 400]);
   dialog.calls[2].success({changed: false});
   assert.match(dialog.elements.status.textContent, /1通送信/);
   assert.equal(dialog.elements.sendButton.disabled, true);
@@ -199,7 +199,7 @@ test('ダイアログは送信中の連打を防ぎ、変更時は再確認を�
 test('ダイアログは送信失敗を表示する', () => {
   const dialog = dialogFixture();
   dialog.elements.monthKey.value = '2026-09';
-  dialog.elements.email.value = 'manager@valid.jp';
+  dialog.elements.email.value = 'manager@example.com';
   dialog.elements.inputForm.submit();
   dialog.calls[0].success({monthKey: '2026-09', count: 0, total: 0});
   dialog.elements.sendButton.click();
@@ -341,9 +341,9 @@ test('手動確認は任意月の日本時間境界を使い、0件も返して�
     row(new Date('2026-10-31T14:59:59Z'), 300),
     row(new Date('2026-10-31T15:00:00Z'), 800)
   );
-  const report = context.previewManualMonthlyReport('2026-10', 'manager@valid.jp');
+  const report = context.previewManualMonthlyReport('2026-10', 'manager@example.com');
   assert.deepEqual(JSON.parse(JSON.stringify(report)), {monthKey: '2026-10', count: 2, total: 500});
-  assert.deepEqual(JSON.parse(JSON.stringify(context.previewManualMonthlyReport('2026-08', 'manager@valid.jp'))),
+  assert.deepEqual(JSON.parse(JSON.stringify(context.previewManualMonthlyReport('2026-08', 'manager@example.com'))),
     {monthKey: '2026-08', count: 0, total: 0});
   assert.equal(sent.length, 0);
 });
@@ -351,10 +351,10 @@ test('手動確認は任意月の日本時間境界を使い、0件も返して�
 test('確認した件数・金額が変わらなければ手動で1通送る', () => {
   const {context, sheets, sent, lockCalls} = fixture();
   sheets['売上報告集計シート'].rows.push([new Date('2026-09-15T00:00:00Z'), '佐藤', 'C', 'A', 'P', '商品', 2, 100, 200]);
-  const preview = context.previewManualMonthlyReport('2026-09', 'manager@valid.jp');
-  assert.equal(context.sendManualMonthlyReport('2026-09', 'manager@valid.jp', preview.count, preview.total).changed, false);
+  const preview = context.previewManualMonthlyReport('2026-09', 'manager@example.com');
+  assert.equal(context.sendManualMonthlyReport('2026-09', 'manager@example.com', preview.count, preview.total).changed, false);
   assert.equal(sent.length, 1);
-  assert.equal(sent[0][0], 'manager@valid.jp');
+  assert.equal(sent[0][0], 'manager@example.com');
   assert.match(sent[0][1], /2026年09月/);
   assert.match(sent[0][2], /200円/);
   assert.deepEqual(lockCalls, [30000, 'release']);
@@ -362,13 +362,13 @@ test('確認した件数・金額が変わらなければ手動で1通送る', (
 
 test('確認後に集計が変われば送信せず新しい結果の再確認を求める', () => {
   const {context, sheets, sent, lockCalls} = fixture();
-  const preview = context.previewManualMonthlyReport('2026-09', 'manager@valid.jp');
+  const preview = context.previewManualMonthlyReport('2026-09', 'manager@example.com');
   sheets['売上報告集計シート'].rows.push([new Date('2026-09-15T00:00:00Z'), '佐藤', 'C', 'A', 'P', '商品', 2, 100, 200]);
-  const result = context.sendManualMonthlyReport('2026-09', 'manager@valid.jp', preview.count, preview.total);
+  const result = context.sendManualMonthlyReport('2026-09', 'manager@example.com', preview.count, preview.total);
   assert.equal(result.changed, true);
   assert.deepEqual(JSON.parse(JSON.stringify(result.report)), {monthKey: '2026-09', count: 1, total: 200});
   assert.equal(sent.length, 0);
-  assert.equal(context.sendManualMonthlyReport('2026-09', 'manager@valid.jp', result.report.count, result.report.total).changed, false);
+  assert.equal(context.sendManualMonthlyReport('2026-09', 'manager@example.com', result.report.count, result.report.total).changed, false);
   assert.equal(sent.length, 1);
   assert.deepEqual(lockCalls, [30000, 'release', 30000, 'release']);
 });
@@ -376,15 +376,15 @@ test('確認後に集計が変われば送信せず新しい結果の再確認�
 test('不正な年月・宛先・確認値では送信しない', () => {
   const {context, sent, lockCalls} = fixture();
   for (const month of ['2026-1', '2026-00', '2026-13', '0000-01', '2026-01\n']) {
-    assert.throws(() => context.previewManualMonthlyReport(month, 'manager@valid.jp'), /対象年月/);
-    assert.throws(() => context.sendManualMonthlyReport(month, 'manager@valid.jp', 0, 0), /対象年月/);
+    assert.throws(() => context.previewManualMonthlyReport(month, 'manager@example.com'), /対象年月/);
+    assert.throws(() => context.sendManualMonthlyReport(month, 'manager@example.com', 0, 0), /対象年月/);
   }
-  for (const email of ['bad', 'a@b', 'a..b@valid.jp', 'a@-valid.jp', 'a@valid.jp\nBcc:other@valid.jp', 'a,b@valid.jp']) {
+  for (const email of ['bad', 'a@b', 'a..b@example.com', 'a@-example.com', 'a@example.com\nBcc:other@example.com', 'a,b@example.com']) {
     assert.throws(() => context.previewManualMonthlyReport('2026-09', email), /メールアドレス/);
     assert.throws(() => context.sendManualMonthlyReport('2026-09', email, 0, 0), /メールアドレス/);
   }
   for (const [count, total] of [[-1, 0], [0, '0'], [1.5, 0], [0, NaN]]) {
-    assert.throws(() => context.sendManualMonthlyReport('2026-09', 'manager@valid.jp', count, total), /確認内容/);
+    assert.throws(() => context.sendManualMonthlyReport('2026-09', 'manager@example.com', count, total), /確認内容/);
   }
   assert.equal(sent.length, 0);
   assert.deepEqual(lockCalls, []);
@@ -392,9 +392,9 @@ test('不正な年月・宛先・確認値では送信しない', () => {
 
 test('メール送信エラーの詳細をダイアログへ渡さずロックを解放する', () => {
   const {context, sent, lockCalls} = fixture();
-  context.MailApp.sendEmail = () => { throw new Error('secret@valid.jp 本文'); };
-  assert.throws(() => context.sendManualMonthlyReport('2026-09', 'secret@valid.jp', 0, 0), error =>
-    /送信に失敗/.test(error.message) && !error.message.includes('secret@valid.jp') && !error.message.includes('本文')
+  context.MailApp.sendEmail = () => { throw new Error('secret@example.com 本文'); };
+  assert.throws(() => context.sendManualMonthlyReport('2026-09', 'secret@example.com', 0, 0), error =>
+    /送信に失敗/.test(error.message) && !error.message.includes('secret@example.com') && !error.message.includes('本文')
   );
   assert.equal(sent.length, 0);
   assert.deepEqual(lockCalls, [30000, 'release']);
