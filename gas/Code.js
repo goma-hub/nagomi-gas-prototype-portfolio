@@ -16,7 +16,14 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('営業部ツール')
     .addItem('売上報告フォームの選択肢を更新', 'updateSalesFormChoicesFromMenu')
+    .addItem('月次報告メールを手動送信', 'showManualMonthlyReportDialog')
     .addToUi();
+}
+
+function showManualMonthlyReportDialog() {
+  const dialog = HtmlService.createHtmlOutputFromFile('ManualMonthlyReport')
+    .setWidth(440).setHeight(420);
+  SpreadsheetApp.getUi().showModalDialog(dialog, '月次報告メールを手動送信');
 }
 
 function updateSalesFormChoicesFromMenu() {
@@ -277,12 +284,73 @@ function parseNonnegativeNumber_(value, label) {
 /** 毎月1日、前月分を営業部長へ送る。 */
 function sendMonthlyReport() {
   const spreadsheet = requireSpreadsheet_();
-  const sheet = requireSalesSheet_(spreadsheet);
-  requireHeaders_(sheet, NAGOMI.salesHeaders);
-  const rows = sheet.getDataRange().getValues().slice(1);
-  const report = summarizePreviousMonth_(rows, currentDate_());
+  const report = monthlyReportFor_(previousMonthKey_(currentDate_()), spreadsheet);
   const director = findSalesDirector_(requireRosterSheet_(spreadsheet));
   sendMonthlyReportTo_(director.email, report);
+}
+
+/** 確認画面に表示する値だけを返し、宛先は保存しない。 */
+function previewManualMonthlyReport(monthKey, email) {
+  validateManualMonthlyInput_(monthKey, email);
+  return reportSummary_(monthlyReportFor_(monthKey, requireSpreadsheet_()));
+}
+
+/** 確認時の件数・金額と送信直前の集計が一致する場合だけ1通送る。 */
+function sendManualMonthlyReport(monthKey, email, confirmedCount, confirmedTotal) {
+  validateManualMonthlyInput_(monthKey, email);
+  if (!Number.isSafeInteger(confirmedCount) || confirmedCount < 0 ||
+      !Number.isSafeInteger(confirmedTotal) || confirmedTotal < 0) {
+    throw new Error('確認内容が無効です。もう一度確認してください。');
+  }
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const report = monthlyReportFor_(monthKey, requireSpreadsheet_());
+    if (report.count !== confirmedCount || report.total !== confirmedTotal) {
+      return {changed: true, report: reportSummary_(report)};
+    }
+    try {
+      sendMonthlyReportTo_(email, report);
+    } catch (error) {
+      // メールサービスの例外には宛先や本文が含まれ得るため転送しない。
+      throw new Error('メールの送信に失敗しました。送信状況を確認してください。');
+    }
+    return {changed: false};
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function validateManualMonthlyInput_(monthKey, email) {
+  if (typeof monthKey !== 'string' || !/^[0-9]{4}-(0[1-9]|1[0-2])$/.test(monthKey) || monthKey.startsWith('0000')) {
+    throw new Error('対象年月はYYYY-MM形式で入力してください。');
+  }
+  if (typeof email !== 'string' || !isValidEmail_(email)) {
+    throw new Error('送信先メールアドレスを確認してください。');
+  }
+}
+
+function isValidEmail_(email) {
+  if (email.length > 254) return false;
+  const parts = email.split('@');
+  if (parts.length !== 2) return false;
+  const [local, domain] = parts;
+  if (!local || local.length > 64 || !/^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+$/.test(local) ||
+      local.startsWith('.') || local.endsWith('.') || local.includes('..')) return false;
+  const labels = domain.split('.');
+  return labels.length >= 2 && labels.every(label =>
+    label.length <= 63 && /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(label)
+  ) && labels[labels.length - 1].length >= 2;
+}
+
+function reportSummary_(report) {
+  return {monthKey: report.monthKey, count: report.count, total: report.total};
+}
+
+function monthlyReportFor_(monthKey, spreadsheet) {
+  const sheet = requireSalesSheet_(spreadsheet);
+  requireHeaders_(sheet, NAGOMI.salesHeaders);
+  return summarizeMonth_(sheet.getDataRange().getValues().slice(1), monthKey);
 }
 
 function currentDate_() {
@@ -293,11 +361,14 @@ function sendMonthlyReportTo_(email, report) {
   MailApp.sendEmail(email, report.subject, report.body);
 }
 
-function summarizePreviousMonth_(rows, now) {
+function previousMonthKey_(now) {
   const currentYear = Number(Utilities.formatDate(now, NAGOMI.timezone, 'yyyy'));
   const currentMonth = Number(Utilities.formatDate(now, NAGOMI.timezone, 'M'));
   const previous = new Date(Date.UTC(currentYear, currentMonth - 2, 1));
-  const monthKey = Utilities.formatDate(previous, 'UTC', 'yyyy-MM');
+  return Utilities.formatDate(previous, 'UTC', 'yyyy-MM');
+}
+
+function summarizeMonth_(rows, monthKey) {
   let count = 0;
   let total = 0;
   rows.forEach((row, index) => {
@@ -320,23 +391,6 @@ function summarizePreviousMonth_(rows, now) {
     subject: '【和み製菓】' + label + ' 売上月次報告',
     body: label + 'の売上報告です。\n\n総売上額: ' + total.toLocaleString('ja-JP') + '円\n売上件数: ' + count + '件'
   };
-}
-
-/** GASエディタから手動実行する月次報告の実メール試験。 */
-function runEmailDeliveryTest() {
-  const ui = SpreadsheetApp.getUi();
-  const answer = ui.prompt('月次報告メール試験', '有効なテスト用メールアドレスを入力してください。月次報告を1通送ります。', ui.ButtonSet.OK_CANCEL);
-  if (answer.getSelectedButton() !== ui.Button.OK) return;
-  const email = String(answer.getResponseText()).trim();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || /(?:@|\.)example\.com$/i.test(email)) {
-    throw new Error('有効なテスト用メールアドレスを入力してください。');
-  }
-  const spreadsheet = requireSpreadsheet_();
-  const salesSheet = requireSalesSheet_(spreadsheet);
-  requireHeaders_(salesSheet, NAGOMI.salesHeaders);
-  const report = summarizePreviousMonth_(salesSheet.getDataRange().getValues().slice(1), currentDate_());
-  sendMonthlyReportTo_(email, report);
-  ui.alert('テスト用アドレスへ月次報告を1通送信しました。受信を確認してください。');
 }
 
 function findSalesDirector_(sheet) {

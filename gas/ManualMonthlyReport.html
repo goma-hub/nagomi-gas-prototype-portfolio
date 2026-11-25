@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <meta charset="UTF-8">
+    <style>
+      body { font-family: Arial, sans-serif; margin: 20px; color: #202124; }
+      label { display: block; margin: 14px 0 5px; font-weight: bold; }
+      input { box-sizing: border-box; width: 100%; padding: 8px; font-size: 14px; }
+      .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
+      button { padding: 8px 16px; cursor: pointer; }
+      button:disabled { cursor: default; opacity: 0.55; }
+      .primary { background: #1a73e8; border: 1px solid #1a73e8; color: white; }
+      .summary { margin: 16px 0; display: grid; grid-template-columns: 100px 1fr; gap: 10px; }
+      .summary dt { font-weight: bold; }
+      .summary dd { margin: 0; overflow-wrap: anywhere; }
+      #status { min-height: 2.5em; margin-top: 14px; white-space: pre-wrap; }
+      #status.error { color: #b3261e; }
+      #status.success { color: #137333; }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <form id="inputForm">
+      <label for="monthKey">対象年月（YYYY-MM）</label>
+      <input id="monthKey" type="text" inputmode="numeric" placeholder="2026-10" pattern="[0-9]{4}-(0[1-9]|1[0-2])" required autocomplete="off">
+      <label for="email">送信先メールアドレス</label>
+      <input id="email" type="email" required autocomplete="off">
+      <div class="actions">
+        <button type="button" id="cancelInput">キャンセル</button>
+        <button type="submit" id="confirmButton" class="primary">確認</button>
+      </div>
+    </form>
+    <section id="confirmation" hidden>
+      <p>以下の内容で月次報告メールを送信します。</p>
+      <dl class="summary">
+        <dt>対象年月</dt><dd id="confirmedMonth"></dd>
+        <dt>送信先</dt><dd id="confirmedEmail"></dd>
+        <dt>売上件数</dt><dd id="confirmedCount"></dd>
+        <dt>総売上額</dt><dd id="confirmedTotal"></dd>
+      </dl>
+      <div class="actions">
+        <button type="button" id="backButton">戻る</button>
+        <button type="button" id="cancelConfirm">キャンセル</button>
+        <button type="button" id="sendButton" class="primary">送信</button>
+      </div>
+    </section>
+    <div id="status" role="status" aria-live="polite"></div>
+    <script>
+      const $ = id => document.getElementById(id);
+      let confirmed = null;
+      let busy = false;
+      let needsReconfirm = false;
+
+      function setStatus(message, kind) {
+        $('status').textContent = message;
+        $('status').className = kind || '';
+      }
+
+      function setBusy(value) {
+        busy = value;
+        ['monthKey', 'email', 'cancelInput', 'confirmButton', 'backButton', 'cancelConfirm', 'sendButton']
+          .forEach(id => { $(id).disabled = value; });
+      }
+
+      function showSummary() {
+        $('confirmedMonth').textContent = confirmed.monthKey;
+        $('confirmedEmail').textContent = confirmed.email;
+        $('confirmedCount').textContent = confirmed.count.toLocaleString('ja-JP') + '件';
+        $('confirmedTotal').textContent = confirmed.total.toLocaleString('ja-JP') + '円';
+        $('inputForm').hidden = true;
+        $('confirmation').hidden = false;
+      }
+
+      function fail(error) {
+        setBusy(false);
+        setStatus(error && error.message ? error.message : '処理に失敗しました。', 'error');
+      }
+
+      $('inputForm').addEventListener('submit', event => {
+        event.preventDefault();
+        if (busy || !$('inputForm').reportValidity()) return;
+        const monthKey = $('monthKey').value;
+        const email = $('email').value;
+        setBusy(true);
+        setStatus('集計中です。');
+        google.script.run.withSuccessHandler(report => {
+          confirmed = {...report, email};
+          needsReconfirm = false;
+          $('sendButton').textContent = '送信';
+          showSummary();
+          setBusy(false);
+          setStatus('内容を確認し、「送信」を押してください。');
+        }).withFailureHandler(fail).previewManualMonthlyReport(monthKey, email);
+      });
+
+      $('sendButton').addEventListener('click', () => {
+        if (busy || !confirmed) return;
+        if (needsReconfirm) {
+          needsReconfirm = false;
+          $('sendButton').textContent = '送信';
+          setStatus('変更後の内容を確認しました。「送信」を押すとメールを送ります。');
+          return;
+        }
+        setBusy(true);
+        setStatus('送信中です。');
+        google.script.run.withSuccessHandler(result => {
+          setBusy(false);
+          if (result.changed) {
+            confirmed = {...result.report, email: confirmed.email};
+            needsReconfirm = true;
+            $('sendButton').textContent = '再確認';
+            showSummary();
+            setStatus('確認時から集計結果が変わりました。新しい内容を再確認してください。', 'error');
+            return;
+          }
+          setStatus('月次報告メールを1通送信しました。', 'success');
+          $('sendButton').disabled = true;
+          $('backButton').disabled = true;
+        }).withFailureHandler(fail).sendManualMonthlyReport(
+          confirmed.monthKey, confirmed.email, confirmed.count, confirmed.total
+        );
+      });
+
+      $('backButton').addEventListener('click', () => {
+        if (busy) return;
+        confirmed = null;
+        needsReconfirm = false;
+        $('confirmation').hidden = true;
+        $('inputForm').hidden = false;
+        setStatus('');
+      });
+      ['cancelInput', 'cancelConfirm'].forEach(id => $(id).addEventListener('click', () => {
+        if (!busy) google.script.host.close();
+      }));
+    </script>
+  </body>
+</html>

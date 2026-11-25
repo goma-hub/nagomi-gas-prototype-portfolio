@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'gas', 'Code.js'), 'utf8');
+const dialogSource = fs.readFileSync(path.join(__dirname, '..', 'gas', 'ManualMonthlyReport.html'), 'utf8');
 const headers = ['報告日時', '報告者名', '取引先ID', '取引先名', '商品ID', '商品名', '販売個数', '販売単価', '合計金額'];
 const rosterHeaders = ['社員名', '部署', '役職', 'メールアドレス'];
 const customerHeaders = ['取引先ID', '取引先名', '取引先区分'];
@@ -107,14 +108,105 @@ function attachForm(context, form) {
   };
 }
 
-test('メニューはマスタ選択肢の手動更新だけを表示する', () => {
+function dialogFixture() {
+  const ids = ['inputForm', 'monthKey', 'email', 'cancelInput', 'confirmButton', 'confirmation',
+    'confirmedMonth', 'confirmedEmail', 'confirmedCount', 'confirmedTotal', 'backButton',
+    'cancelConfirm', 'sendButton', 'status'];
+  const elements = Object.fromEntries(ids.map(id => [id, {
+    value: '', textContent: '', className: '', hidden: false, disabled: false, handlers: {},
+    addEventListener(type, handler) { this.handlers[type] = handler; },
+    reportValidity() { return true; },
+    click() { this.handlers.click(); },
+    submit() { this.handlers.submit({preventDefault() {}}); }
+  }]));
+  const calls = [];
+  let closes = 0;
+  const runner = {
+    withSuccessHandler(handler) { this.success = handler; return this; },
+    withFailureHandler(handler) { this.failure = handler; return this; },
+    previewManualMonthlyReport(...args) { calls.push({method: 'preview', args, success: this.success, failure: this.failure}); },
+    sendManualMonthlyReport(...args) { calls.push({method: 'send', args, success: this.success, failure: this.failure}); }
+  };
+  const script = dialogSource.match(/<script>([\s\S]*?)<\/script>/)[1];
+  vm.runInNewContext(script, {
+    document: {getElementById: id => elements[id]},
+    google: {script: {run: runner, host: {close() { closes++; }}}}
+  }, {filename: 'ManualMonthlyReport.html'});
+  return {elements, calls, get closes() { return closes; }};
+}
+
+test('メニューにフォーム更新と月次報告の手動送信を表示する', () => {
   const {context} = fixture();
   const entries = [];
   context.SpreadsheetApp.getUi = () => ({createMenu: () => ({
     addItem(label, handler) { entries.push([label, handler]); return this; }, addToUi() {}
   })});
   context.onOpen();
-  assert.deepEqual(entries, [['売上報告フォームの選択肢を更新', 'updateSalesFormChoicesFromMenu']]);
+  assert.deepEqual(entries, [
+    ['売上報告フォームの選択肢を更新', 'updateSalesFormChoicesFromMenu'],
+    ['月次報告メールを手動送信', 'showManualMonthlyReportDialog']
+  ]);
+});
+
+test('手動送信メニューはHTMLダイアログを開く', () => {
+  const {context} = fixture();
+  const shown = [];
+  const output = {setWidth() { return this; }, setHeight() { return this; }};
+  context.HtmlService = {createHtmlOutputFromFile(name) {
+    assert.equal(name, 'ManualMonthlyReport'); return output;
+  }};
+  context.SpreadsheetApp.getUi = () => ({showModalDialog: (...args) => shown.push(args)});
+  context.showManualMonthlyReportDialog();
+  assert.deepEqual(shown, [[output, '月次報告メールを手動送信']]);
+});
+
+test('ダイアログは確認前とキャンセル時に送信しない', () => {
+  const dialog = dialogFixture();
+  dialog.elements.monthKey.value = '2026-09';
+  dialog.elements.email.value = 'manager@valid.jp';
+  dialog.elements.inputForm.submit();
+  assert.deepEqual(dialog.calls[0].args, ['2026-09', 'manager@valid.jp']);
+  assert.equal(dialog.elements.confirmButton.disabled, true);
+  dialog.calls[0].success({monthKey: '2026-09', count: 0, total: 0});
+  assert.equal(dialog.elements.confirmedCount.textContent, '0件');
+  assert.equal(dialog.elements.confirmedTotal.textContent, '0円');
+  dialog.elements.cancelConfirm.click();
+  assert.equal(dialog.closes, 1);
+  assert.equal(dialog.calls.filter(call => call.method === 'send').length, 0);
+});
+
+test('ダイアログは送信中の連打を防ぎ、変更時は再確認を要求する', () => {
+  const dialog = dialogFixture();
+  dialog.elements.monthKey.value = '2026-09';
+  dialog.elements.email.value = 'manager@valid.jp';
+  dialog.elements.inputForm.submit();
+  dialog.calls[0].success({monthKey: '2026-09', count: 1, total: 200});
+  dialog.elements.sendButton.click();
+  dialog.elements.sendButton.click();
+  assert.equal(dialog.calls.filter(call => call.method === 'send').length, 1);
+  assert.equal(dialog.elements.sendButton.disabled, true);
+  dialog.calls[1].success({changed: true, report: {monthKey: '2026-09', count: 2, total: 400}});
+  assert.equal(dialog.elements.sendButton.textContent, '再確認');
+  dialog.elements.sendButton.click();
+  assert.equal(dialog.calls.length, 2);
+  dialog.elements.sendButton.click();
+  assert.deepEqual(dialog.calls[2].args, ['2026-09', 'manager@valid.jp', 2, 400]);
+  dialog.calls[2].success({changed: false});
+  assert.match(dialog.elements.status.textContent, /1通送信/);
+  assert.equal(dialog.elements.sendButton.disabled, true);
+});
+
+test('ダイアログは送信失敗を表示する', () => {
+  const dialog = dialogFixture();
+  dialog.elements.monthKey.value = '2026-09';
+  dialog.elements.email.value = 'manager@valid.jp';
+  dialog.elements.inputForm.submit();
+  dialog.calls[0].success({monthKey: '2026-09', count: 0, total: 0});
+  dialog.elements.sendButton.click();
+  dialog.calls[1].failure({message: 'メールの送信に失敗しました。'});
+  assert.match(dialog.elements.status.textContent, /送信に失敗/);
+  assert.equal(dialog.elements.status.className, 'error');
+  assert.equal(dialog.elements.sendButton.disabled, false);
 });
 
 test('フォーム更新の確認を取り消すと設問を変更しない', () => {
@@ -224,10 +316,10 @@ test('月次報告は報告日時で前月を選び9列目の金額を合計す�
     row(new Date('2025-12-31T14:59:59Z'), 250),
     row(new Date('2025-12-31T15:00:00Z'), 888)
   ];
-  const report = context.summarizePreviousMonth_(rows, new Date('2025-12-31T15:05:00Z'));
+  const report = context.summarizeMonth_(rows, context.previousMonthKey_(new Date('2025-12-31T15:05:00Z')));
   assert.deepEqual([report.monthKey, report.count, report.total], ['2025-12', 2, 350]);
   assert.match(report.body, /350円/);
-  assert.deepEqual([context.summarizePreviousMonth_([], new Date('2026-02-01T00:00:00Z')).count], [0]);
+  assert.deepEqual([context.summarizeMonth_([], context.previousMonthKey_(new Date('2026-02-01T00:00:00Z'))).count], [0]);
 });
 
 test('月次報告は営業部長の名簿メールへ送る', () => {
@@ -240,19 +332,72 @@ test('月次報告は営業部長の名簿メールへ送る', () => {
   assert.match(sent[0][2], /200円/);
 });
 
-test('実メール試験は9列の月次報告だけを指定アドレスへ1通送る', () => {
+test('手動確認は任意月の日本時間境界を使い、0件も返して送信しない', () => {
   const {context, sheets, sent} = fixture();
+  const row = (date, amount) => [date, '佐藤', 'C', 'A', 'P', '商品', 1, amount, amount];
+  sheets['売上報告集計シート'].rows.push(
+    row(new Date('2026-09-30T14:59:59Z'), 900),
+    row(new Date('2026-09-30T15:00:00Z'), 200),
+    row(new Date('2026-10-31T14:59:59Z'), 300),
+    row(new Date('2026-10-31T15:00:00Z'), 800)
+  );
+  const report = context.previewManualMonthlyReport('2026-10', 'manager@valid.jp');
+  assert.deepEqual(JSON.parse(JSON.stringify(report)), {monthKey: '2026-10', count: 2, total: 500});
+  assert.deepEqual(JSON.parse(JSON.stringify(context.previewManualMonthlyReport('2026-08', 'manager@valid.jp'))),
+    {monthKey: '2026-08', count: 0, total: 0});
+  assert.equal(sent.length, 0);
+});
+
+test('確認した件数・金額が変わらなければ手動で1通送る', () => {
+  const {context, sheets, sent, lockCalls} = fixture();
   sheets['売上報告集計シート'].rows.push([new Date('2026-09-15T00:00:00Z'), '佐藤', 'C', 'A', 'P', '商品', 2, 100, 200]);
-  context.currentDate_ = () => new Date('2026-10-01T00:00:00Z');
-  context.SpreadsheetApp.getUi = () => ({
-    ButtonSet: {OK_CANCEL: 'set'}, Button: {OK: 'ok'},
-    prompt: () => ({getSelectedButton: () => 'ok', getResponseText: () => 'test@valid.jp'}),
-    alert() {}
-  });
-  context.runEmailDeliveryTest();
+  const preview = context.previewManualMonthlyReport('2026-09', 'manager@valid.jp');
+  assert.equal(context.sendManualMonthlyReport('2026-09', 'manager@valid.jp', preview.count, preview.total).changed, false);
   assert.equal(sent.length, 1);
-  assert.equal(sent[0][0], 'test@valid.jp');
+  assert.equal(sent[0][0], 'manager@valid.jp');
+  assert.match(sent[0][1], /2026年09月/);
   assert.match(sent[0][2], /200円/);
+  assert.deepEqual(lockCalls, [30000, 'release']);
+});
+
+test('確認後に集計が変われば送信せず新しい結果の再確認を求める', () => {
+  const {context, sheets, sent, lockCalls} = fixture();
+  const preview = context.previewManualMonthlyReport('2026-09', 'manager@valid.jp');
+  sheets['売上報告集計シート'].rows.push([new Date('2026-09-15T00:00:00Z'), '佐藤', 'C', 'A', 'P', '商品', 2, 100, 200]);
+  const result = context.sendManualMonthlyReport('2026-09', 'manager@valid.jp', preview.count, preview.total);
+  assert.equal(result.changed, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.report)), {monthKey: '2026-09', count: 1, total: 200});
+  assert.equal(sent.length, 0);
+  assert.equal(context.sendManualMonthlyReport('2026-09', 'manager@valid.jp', result.report.count, result.report.total).changed, false);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(lockCalls, [30000, 'release', 30000, 'release']);
+});
+
+test('不正な年月・宛先・確認値では送信しない', () => {
+  const {context, sent, lockCalls} = fixture();
+  for (const month of ['2026-1', '2026-00', '2026-13', '0000-01', '2026-01\n']) {
+    assert.throws(() => context.previewManualMonthlyReport(month, 'manager@valid.jp'), /対象年月/);
+    assert.throws(() => context.sendManualMonthlyReport(month, 'manager@valid.jp', 0, 0), /対象年月/);
+  }
+  for (const email of ['bad', 'a@b', 'a..b@valid.jp', 'a@-valid.jp', 'a@valid.jp\nBcc:other@valid.jp', 'a,b@valid.jp']) {
+    assert.throws(() => context.previewManualMonthlyReport('2026-09', email), /メールアドレス/);
+    assert.throws(() => context.sendManualMonthlyReport('2026-09', email, 0, 0), /メールアドレス/);
+  }
+  for (const [count, total] of [[-1, 0], [0, '0'], [1.5, 0], [0, NaN]]) {
+    assert.throws(() => context.sendManualMonthlyReport('2026-09', 'manager@valid.jp', count, total), /確認内容/);
+  }
+  assert.equal(sent.length, 0);
+  assert.deepEqual(lockCalls, []);
+});
+
+test('メール送信エラーの詳細をダイアログへ渡さずロックを解放する', () => {
+  const {context, sent, lockCalls} = fixture();
+  context.MailApp.sendEmail = () => { throw new Error('secret@valid.jp 本文'); };
+  assert.throws(() => context.sendManualMonthlyReport('2026-09', 'secret@valid.jp', 0, 0), error =>
+    /送信に失敗/.test(error.message) && !error.message.includes('secret@valid.jp') && !error.message.includes('本文')
+  );
+  assert.equal(sent.length, 0);
+  assert.deepEqual(lockCalls, [30000, 'release']);
 });
 
 test('9列の初期設定は変更を予告し、確認後にトリガーを重複なく設定する', () => {
@@ -311,8 +456,8 @@ test('不正な集計金額と月次合計の桁あふれを検出する', () =>
   const date = new Date('2026-09-15T00:00:00Z');
   const row = amount => [date, '佐藤', 'C', '取引先', 'P', '商品', 1, 100, amount];
   const now = new Date('2026-10-01T00:00:00Z');
-  assert.throws(() => context.summarizePreviousMonth_([row('100')], now), /数値ではありません/);
-  assert.throws(() => context.summarizePreviousMonth_([row(Number.MAX_SAFE_INTEGER), row(1)], now), /範囲を超え/);
+  assert.throws(() => context.summarizeMonth_([row('100')], context.previousMonthKey_(now)), /数値ではありません/);
+  assert.throws(() => context.summarizeMonth_([row(Number.MAX_SAFE_INTEGER), row(1)], context.previousMonthKey_(now)), /範囲を超え/);
 });
 
 test('商品単価と個数の積が扱える範囲を超える場合は記録しない', () => {
