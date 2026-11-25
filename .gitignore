@@ -1,0 +1,13 @@
+.clasp.json
+.clasprc.json
+.env
+.env.*
+node_modules/
+coverage/
+remote-snapshot/
+remote-check/
+*.log
+
+# The supplied course documents are references, not source code to publish.
+*.docx
+*.xlsx
